@@ -1,1 +1,71 @@
-
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signed() { return request.auth != null; }
+    match /rooms/{code} {
+      function gm() { return signed() && get(/databases/$(database)/documents/rooms/$(code)).data.gmUid == request.auth.uid; }
+      function gmAfter() { return signed() && getAfter(/databases/$(database)/documents/rooms/$(code)).data.gmUid == request.auth.uid; }
+      function member() { return signed() && (gm() || exists(/databases/$(database)/documents/rooms/$(code)/members/$(request.auth.uid))); }
+      allow get: if signed();
+      allow list: if false;
+      allow create: if signed() && code.matches('^[A-HJ-NP-Z2-9]{20}$')
+        && request.resource.data.keys().hasOnly(['gmUid','title','open','version','createdAt'])
+        && request.resource.data.gmUid == request.auth.uid
+        && request.resource.data.title is string && request.resource.data.title.size() <= 60
+        && request.resource.data.open == true && request.resource.data.version == 2
+        && request.resource.data.createdAt == request.time;
+      allow update: if gm() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['open']) && request.resource.data.open is bool;
+      allow delete: if false;
+      match /members/{uid} {
+        allow read: if member() || (signed() && uid == request.auth.uid);
+        allow create: if signed() && uid == request.auth.uid
+          && (getAfter(/databases/$(database)/documents/rooms/$(code)).data.open == true || gmAfter())
+          && request.resource.data.keys().hasOnly(['name','joinedAt'])
+          && request.resource.data.name is string && request.resource.data.name.size() <= 40
+          && request.resource.data.joinedAt == request.time;
+        allow update, delete: if false;
+      }
+      match /state/{id} {
+        function shape() {
+          let d = request.resource.data;
+          return d.keys().hasOnly(['kind','ownerUid','payload','rev','token'])
+            && d.ownerUid is string && d.ownerUid.size() <= 128
+            && d.rev is int && d.rev >= 1 && d.token is string && d.token.size() <= 80
+            && d.payload is map &&
+            ((id == 'board' && d.kind == 'board' && d.payload.keys().hasOnly(['party','combat']) && d.payload.party is map && d.payload.combat is map)
+            || (id != 'board' && d.kind == 'hero' && d.payload.id == id
+            && d.payload.name is string && d.payload.name.size() <= 60
+            && d.payload.level is int && d.payload.level >= 1 && d.payload.level <= 3
+            && d.payload.race is int && d.payload.race >= 1 && d.payload.race <= 20
+            && d.payload.job is int && d.payload.job >= 0 && d.payload.job <= 5
+            && d.payload.hp is int && d.payload.hp >= 0 && d.payload.hp <= 100
+            && d.payload.focus is int && d.payload.focus >= 0 && d.payload.focus <= 4
+            && d.payload.ap is int && d.payload.ap >= 0 && d.payload.ap <= 2
+            && d.payload.stats is map && d.payload.trained is list && d.payload.trained.size() <= 20
+            && d.payload.inventory is list && d.payload.inventory.size() <= 8
+            && d.payload.statuses is list && d.payload.statuses.size() <= 30));
+        }
+        allow read: if member();
+        allow create: if shape() && request.resource.data.rev == 1
+          && ((gmAfter() && (request.resource.data.ownerUid == request.auth.uid || exists(/databases/$(database)/documents/rooms/$(code)/members/$(request.resource.data.ownerUid))))
+            || (member() && id == 'pc_' + request.auth.uid && request.resource.data.kind == 'hero' && request.resource.data.ownerUid == request.auth.uid));
+        allow update: if member() && shape()
+          && request.resource.data.ownerUid == resource.data.ownerUid
+          && request.resource.data.kind == resource.data.kind
+          && request.resource.data.rev == resource.data.rev + 1
+          && request.resource.data.token != resource.data.token
+          && (gm() || (id != 'board' && resource.data.kind == 'hero' && resource.data.ownerUid == request.auth.uid));
+        allow delete: if gm();
+      }
+      match /events/{eventId} {
+        allow read: if member();
+        allow create: if member()
+          && request.resource.data.keys().hasOnly(['authorUid','text','createdAt'])
+          && request.resource.data.authorUid == request.auth.uid
+          && request.resource.data.text is string && request.resource.data.text.size() <= 500
+          && request.resource.data.createdAt == request.time;
+        allow update, delete: if false;
+      }
+    }
+  }
+}
